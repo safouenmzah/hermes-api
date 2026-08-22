@@ -103,43 +103,85 @@ def check_hermes_available() -> bool:
 
 def invoke_hermes_agent(prompt: str, config: AgentConfig) -> tuple[str, bool]:
     """
-    Invoke Hermes agent with a prompt.
+    Invoke Hermes agent via Anthropic API (using your configured keys).
     Returns: (response_text, reasoning_used)
-
-    For MVP, we'll do a simple subprocess call to `hermes` CLI
-    In production, this would use the Python API directly.
     """
-    import subprocess
-    import json
-    import uuid
+    import httpx
 
     try:
-        # For now, simulate agent response
-        # In production: call hermes gateway or SDK
-        hermes_cmd = Path.home() / ".local" / "bin" / "hermes"
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            logger.warning("ANTHROPIC_API_KEY not set. Using mock response.")
+            return f"Mock: {prompt[:100]}...", False
 
-        if not hermes_cmd.exists():
-            hermes_cmd = Path.home() / ".hermes" / "hermes-agent" / "hermes"
+        # Map model names
+        model_map = {
+            "claude-opus-5": "claude-3-5-opus-20241022",
+            "claude-sonnet-5": "claude-3-5-sonnet-20241022",
+            "claude-opus": "claude-3-opus-20240229",
+            "claude-sonnet": "claude-3-5-sonnet-20241022",
+        }
+        actual_model = model_map.get(config.model, config.model)
 
-        if hermes_cmd.exists():
-            # TODO: Wire up real Hermes CLI invocation
-            logger.info(f"Hermes CLI found at {hermes_cmd}")
+        # Build request payload
+        payload = {
+            "model": actual_model,
+            "max_tokens": config.max_tokens,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ]
+        }
 
-        # MVP fallback: return structured response
-        response = f"""I received your message: "{prompt}"
+        # Add thinking if using high reasoning
+        if config.reasoning_effort in ["high", "xhigh", "max", "ultra"]:
+            payload["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": min(config.max_tokens // 2, 10000)
+            }
 
-Using Hermes Agent with:
-- Model: {config.model}
-- Reasoning: {config.reasoning_effort}
-- Max tokens: {config.max_tokens}
+        logger.info(f"Calling Anthropic API: {actual_model} (reasoning: {config.reasoning_effort})")
 
-[In production, this would invoke your Hermes agent with full reasoning and capabilities]"""
+        # Call Anthropic API
+        with httpx.Client() as client:
+            response = client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                },
+                json=payload,
+                timeout=60.0
+            )
 
-        return response, config.reasoning_effort != "minimal"
+            if response.status_code == 200:
+                result = response.json()
+                # Extract text from response
+                text_content = ""
+                thinking_content = ""
 
+                for block in result.get("content", []):
+                    if block.get("type") == "text":
+                        text_content = block.get("text", "")
+                    elif block.get("type") == "thinking":
+                        thinking_content = block.get("thinking", "")
+
+                response_text = text_content or f"(Agent processed: {prompt[:50]}...)"
+                reasoning_used = bool(thinking_content)
+
+                logger.info(f"✓ Anthropic responded ({len(response_text)} chars, reasoning: {reasoning_used})")
+                return response_text, reasoning_used
+            else:
+                error_msg = response.text[:200]
+                logger.error(f"API error {response.status_code}: {error_msg}")
+                return f"❌ API error: {error_msg}", False
+
+    except httpx.TimeoutException:
+        logger.error("API call timed out")
+        return "⏱️ Request took too long. Try a simpler prompt.", False
     except Exception as e:
-        logger.error(f"Error invoking Hermes: {e}")
-        raise
+        logger.error(f"Error calling Anthropic: {e}")
+        return f"❌ Error: {str(e)[:200]}", False
 
 # ─── API Endpoints ───────────────────────────────────────────────────────
 
