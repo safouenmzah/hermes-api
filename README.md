@@ -1,31 +1,34 @@
-# Hermes Agent API — MVP
+# Hermes Agent Manager — MVP
 
-REST API wrapper for Hermes Agent. Exposes chat, agent configuration, and conversation history.
+**Per-user agent management platform** with Telegram bot interface.
+
+Users deploy agents and chat with them via Telegram. Each user gets their own agents with customizable settings.
 
 ## Quick Start
 
-### 1. Install dependencies
+### 1. Setup Telegram Bot
+Follow the guide in `TELEGRAM_SETUP.md`:
+- Get a bot token from @BotFather
+- Add it to `.env`
+
+### 2. Start the service
 ```bash
 cd /Users/saf/hermes-api
 source venv/bin/activate
-pip install -r requirements.txt
+python run.py
 ```
 
-### 2. Start the server
-```bash
-python main.py
-```
+This starts:
+- ✅ FastAPI server on `http://localhost:8000`
+- ✅ Telegram bot (polling for messages)
 
-Server runs on `http://localhost:8000`
+### 3. Test with Telegram
+- Find your bot on Telegram
+- Send `/start`
+- Send `/deploy`
+- Chat with your agent!
 
-### 3. Test it
-```bash
-# In another terminal
-source venv/bin/activate
-python test_client.py
-```
-
-Or use the interactive docs at: **http://localhost:8000/docs**
+Or test API directly: **http://localhost:8000/docs**
 
 ## API Endpoints
 
@@ -84,14 +87,27 @@ curl -X POST http://localhost:8000/config \
 ## Architecture
 
 ```
-User/Frontend
+Telegram User
      ↓
- FastAPI Server (main.py)
+Telegram Bot (telegram_bot.py)
+     ↓
+FastAPI Server (main.py) — Agent Manager
+     ↓
+Per-User Agent Storage (agents_db.json)
+     ↓
+Agent API (/chat endpoint)
      ↓
 Hermes Agent (Python SDK)
      ↓
 LLM Provider (Anthropic, etc)
 ```
+
+**Flow:**
+1. User sends message in Telegram
+2. Bot routes to agent manager
+3. Manager finds user's active agent
+4. Calls `/chat` endpoint with agent config
+5. Returns response back to user in Telegram
 
 ## Development
 
