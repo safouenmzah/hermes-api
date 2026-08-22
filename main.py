@@ -11,6 +11,10 @@ import logging
 import os
 import sys
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Add Hermes to path
 sys.path.insert(0, str(Path.home() / ".hermes" / "hermes-agent"))
@@ -43,15 +47,15 @@ app.add_middleware(
 class AgentConfig(BaseModel):
     """Agent configuration"""
     reasoning_effort: str = Field(
-        default="medium",
+        default=os.getenv("DEFAULT_REASONING", "medium"),
         description="Reasoning effort: minimal, low, medium, high, xhigh, max, ultra"
     )
     model: str = Field(
-        default="claude-opus-5",
+        default=os.getenv("DEFAULT_MODEL", "claude-opus-5"),
         description="Model to use"
     )
     max_tokens: int = Field(
-        default=4096,
+        default=int(os.getenv("MAX_TOKENS", "4096")),
         description="Maximum tokens in response"
     )
 
@@ -235,11 +239,14 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
+    port = int(os.getenv("PORT", "8000"))
+    host = os.getenv("HOST", "0.0.0.0")
     logger.info("Starting Hermes Agent API Server...")
     logger.info(f"Hermes available: {check_hermes_available()}")
+    logger.info(f"Listening on {host}:{port}")
     uvicorn.run(
         app,
-        host="0.0.0.0",
-        port=8000,
+        host=host,
+        port=port,
         log_level="info"
     )
