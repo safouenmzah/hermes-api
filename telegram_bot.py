@@ -15,6 +15,7 @@ from pathlib import Path
 from datetime import datetime
 import httpx
 import uuid
+from agents import get_agent_template, list_agent_types
 
 logger = logging.getLogger(__name__)
 
@@ -41,27 +42,63 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     user_agents = agents.get(str(user_id), {}).get("agents", [])
 
+    agent_types_list = "\n".join([f"• **{t}** — {get_agent_template(t)['description']}" for t in list_agent_types()])
+
     welcome_text = f"""
 👋 Welcome, {username}!
 
-I'm your Hermes Agent Manager. You can:
-• `/deploy` — Create a new AI agent for you
+I'm Relay — your managed AI agent platform. You can deploy specialized AI agents:
+
+{agent_types_list}
+
+**Quick Start:**
+1. `/deploy python-tutor` — Deploy a Python instructor
+2. Send a message → Start learning!
+3. `/history` → Review your conversation
+
+**Commands:**
+• `/deploy [type]` — Create a new agent
 • `/list` — See your agents
-• `/status` — Check agent status
-• `/config` — Configure agent settings
-• `/help` — See all commands
+• `/status` — Check active agent
+• `/help` — All commands
 
 **Or just send a message** to chat with your active agent!
 
-Ready to deploy? Type `/deploy`
+Ready? Try: `/deploy python-tutor`
 """
 
-    await update.message.reply_text(welcome_text.strip())
+    await update.message.reply_text(welcome_text.strip(), parse_mode=ParseMode.MARKDOWN)
 
 async def deploy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /deploy command - create new agent"""
+    """Handle /deploy command - create new agent
+    Usage: /deploy [agent_type]
+    Available types: default, python-tutor, data-science-coach
+    """
     user_id = update.effective_user.id
     agents = load_agents()
+
+    # Get agent type from command args, default to "default"
+    agent_type = "default"
+    if context.args and len(context.args) > 0:
+        agent_type = context.args[0].lower()
+
+    # Validate agent type
+    available_types = list_agent_types()
+    if agent_type not in available_types:
+        response = f"""
+❌ Unknown agent type: `{agent_type}`
+
+Available types:
+"""
+        for atype in available_types:
+            template = get_agent_template(atype)
+            response += f"• `{atype}` — {template['description']}\n"
+        response += f"\nUsage: `/deploy {available_types[0]}`"
+        await update.message.reply_text(response, parse_mode=ParseMode.MARKDOWN)
+        return
+
+    # Get template for this agent type
+    template = get_agent_template(agent_type)
 
     # Create new agent for this user
     agent_id = f"agent_{uuid.uuid4().hex[:8]}"
@@ -71,13 +108,22 @@ async def deploy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     new_agent = {
         "id": agent_id,
-        "name": f"Agent {len(agents[str(user_id)]['agents']) + 1}",
+        "name": template["name"],
+        "type": agent_type,
         "status": "running",
-        "model": "claude-opus-5",
-        "reasoning": "medium",
+        "model": template["default_config"]["model"],
+        "reasoning": template["default_config"]["reasoning_effort"],
+        "max_tokens": template["default_config"].get("max_tokens", 2048),
+        "system_prompt": template["system_prompt"],
         "created_at": datetime.now().isoformat(),
-        "message_count": 0
+        "message_count": 0,
+        "conversation": []
     }
+
+    # Add type-specific config
+    for key, value in template["default_config"].items():
+        if key not in ["model", "reasoning_effort", "max_tokens"]:
+            new_agent[key] = value
 
     agents[str(user_id)]["agents"].append(new_agent)
     agents[str(user_id)]["active_agent"] = agent_id
@@ -86,10 +132,12 @@ async def deploy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     response = f"""
 ✅ Agent deployed!
 
+**Agent Type:** {template['name']}
 **Agent ID:** `{agent_id}`
-**Name:** {new_agent['name']}
 **Model:** {new_agent['model']}
 **Reasoning:** {new_agent['reasoning']}
+
+{template['description']}
 
 You can now:
 • Send messages to chat with this agent
@@ -99,7 +147,7 @@ You can now:
 """
 
     await update.message.reply_text(response, parse_mode=ParseMode.MARKDOWN)
-    logger.info(f"User {user_id} deployed agent {agent_id}")
+    logger.info(f"User {user_id} deployed {agent_type} agent {agent_id}")
 
 async def list_agents(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /list command - show user's agents"""
@@ -109,13 +157,14 @@ async def list_agents(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user_agents = user_data.get("agents", [])
 
     if not user_agents:
-        await update.message.reply_text("No agents yet. Deploy one with `/deploy`")
+        await update.message.reply_text("No agents yet. Deploy one with `/deploy python-tutor`")
         return
 
     response = "🤖 **Your Agents:**\n\n"
     for i, agent in enumerate(user_agents, 1):
         active = "✨ ACTIVE" if agent["id"] == user_data.get("active_agent") else "⏸️  inactive"
-        response += f"{i}. **{agent['name']}** ({active})\n"
+        agent_type = agent.get("type", "unknown")
+        response += f"{i}. **{agent['name']}** ({agent_type}) {active}\n"
         response += f"   ID: `{agent['id']}`\n"
         response += f"   Model: {agent['model']} | Reasoning: {agent['reasoning']}\n"
         response += f"   Messages: {agent.get('message_count', 0)}\n\n"
@@ -187,16 +236,21 @@ async def config(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /help command"""
-    help_text = """
+    agent_types = "\n".join([f"• `{t}` — {get_agent_template(t)['description']}" for t in list_agent_types()])
+
+    help_text = f"""
 **Commands:**
 
 🚀 **Agent Management**
-• `/deploy` — Create new agent
+• `/deploy [type]` — Create new agent
 • `/list` — Show all your agents
 • `/switch <id>` — Switch active agent
 • `/status` — Check active agent
 • `/config [key=value]` — View/modify settings
 • `/history` — Last 10 messages
+
+🤖 **Agent Types**
+{agent_types}
 
 ⚙️ **Settings**
 • `reasoning=minimal|low|medium|high|xhigh|max`
@@ -207,9 +261,8 @@ Just send any message to chat with your active agent!
 
 **Example:**
 ```
-/deploy
-/config reasoning=high
-Hello agent!
+/deploy python-tutor
+I want to learn Python!
 /history
 ```
 """
@@ -274,7 +327,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     "config": {
                         "model": agent.get("model", "claude-opus-5"),
                         "reasoning_effort": agent.get("reasoning", "medium"),
-                        "max_tokens": 4096
+                        "max_tokens": agent.get("max_tokens", 4096),
+                        "system_prompt": agent.get("system_prompt", "You are a helpful AI assistant.")
                     }
                 },
                 timeout=30.0

@@ -1,6 +1,7 @@
 """
 Hermes Agent API Server — MVP
 Expose Hermes Agent capabilities as a REST API
+Pluggable LLM provider backend (Claude, Hermes, etc.)
 """
 
 from fastapi import FastAPI, HTTPException
@@ -18,6 +19,9 @@ load_dotenv()
 
 # Add Hermes to path
 sys.path.insert(0, str(Path.home() / ".hermes" / "hermes-agent"))
+
+# Import provider abstraction (note: use llm_providers to avoid conflict with hermes providers module)
+from llm_providers import get_provider, AgentConfig as ProviderConfig
 
 # Configure logging
 logging.basicConfig(
@@ -44,8 +48,8 @@ app.add_middleware(
 
 # ─── Data Models ─────────────────────────────────────────────────────────
 
-class AgentConfig(BaseModel):
-    """Agent configuration"""
+class AgentConfigAPI(BaseModel):
+    """Agent configuration (API model)"""
     reasoning_effort: str = Field(
         default=os.getenv("DEFAULT_REASONING", "medium"),
         description="Reasoning effort: minimal, low, medium, high, xhigh, max, ultra"
@@ -58,6 +62,19 @@ class AgentConfig(BaseModel):
         default=int(os.getenv("MAX_TOKENS", "4096")),
         description="Maximum tokens in response"
     )
+    system_prompt: str = Field(
+        default="You are a helpful AI assistant.",
+        description="System prompt for the agent"
+    )
+
+    def to_provider_config(self) -> ProviderConfig:
+        """Convert API model to provider config"""
+        return ProviderConfig(
+            reasoning_effort=self.reasoning_effort,
+            model=self.model,
+            max_tokens=self.max_tokens,
+            system_prompt=self.system_prompt
+        )
 
 class ChatRequest(BaseModel):
     """Chat/prompt request"""
@@ -66,7 +83,7 @@ class ChatRequest(BaseModel):
         default=None,
         description="Track conversation state (for future multi-turn)"
     )
-    config: Optional[AgentConfig] = Field(
+    config: Optional[AgentConfigAPI] = Field(
         default=None,
         description="Override agent config for this request"
     )
@@ -83,14 +100,19 @@ class HealthResponse(BaseModel):
     """Health check response"""
     status: str
     hermes_available: bool
+    llm_provider: str
+    provider_available: bool
     version: str
 
 # ─── In-memory state (for MVP) ───────────────────────────────────────────
 
 conversations: dict = {}
-default_config = AgentConfig()
+default_config = AgentConfigAPI()
 
-# ─── Hermes Integration ───────────────────────────────────────────────────
+# Initialize LLM provider
+llm_provider = get_provider()
+
+# ─── Helper Functions ───────────────────────────────────────────────────
 
 def check_hermes_available() -> bool:
     """Check if Hermes is installed and accessible"""
@@ -101,114 +123,36 @@ def check_hermes_available() -> bool:
         logger.error(f"Error checking Hermes: {e}")
         return False
 
-def invoke_hermes_agent(prompt: str, config: AgentConfig) -> tuple[str, bool]:
-    """
-    Invoke Hermes agent via Anthropic API (using your configured keys).
-    Returns: (response_text, reasoning_used)
-    """
-    import httpx
-
-    try:
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            logger.warning("ANTHROPIC_API_KEY not set. Using mock response.")
-            return f"Mock: {prompt[:100]}...", False
-
-        # Map model names
-        model_map = {
-            "claude-opus-5": "claude-3-5-opus-20241022",
-            "claude-sonnet-5": "claude-3-5-sonnet-20241022",
-            "claude-opus": "claude-3-opus-20240229",
-            "claude-sonnet": "claude-3-5-sonnet-20241022",
-        }
-        actual_model = model_map.get(config.model, config.model)
-
-        # Build request payload
-        payload = {
-            "model": actual_model,
-            "max_tokens": config.max_tokens,
-            "messages": [
-                {"role": "user", "content": prompt}
-            ]
-        }
-
-        # Add thinking if using high reasoning
-        if config.reasoning_effort in ["high", "xhigh", "max", "ultra"]:
-            payload["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": min(config.max_tokens // 2, 10000)
-            }
-
-        logger.info(f"Calling Anthropic API: {actual_model} (reasoning: {config.reasoning_effort})")
-
-        # Call Anthropic API
-        with httpx.Client() as client:
-            response = client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json"
-                },
-                json=payload,
-                timeout=60.0
-            )
-
-            if response.status_code == 200:
-                result = response.json()
-                # Extract text from response
-                text_content = ""
-                thinking_content = ""
-
-                for block in result.get("content", []):
-                    if block.get("type") == "text":
-                        text_content = block.get("text", "")
-                    elif block.get("type") == "thinking":
-                        thinking_content = block.get("thinking", "")
-
-                response_text = text_content or f"(Agent processed: {prompt[:50]}...)"
-                reasoning_used = bool(thinking_content)
-
-                logger.info(f"✓ Anthropic responded ({len(response_text)} chars, reasoning: {reasoning_used})")
-                return response_text, reasoning_used
-            else:
-                error_msg = response.text[:200]
-                logger.error(f"API error {response.status_code}: {error_msg}")
-                return f"❌ API error: {error_msg}", False
-
-    except httpx.TimeoutException:
-        logger.error("API call timed out")
-        return "⏱️ Request took too long. Try a simpler prompt.", False
-    except Exception as e:
-        logger.error(f"Error calling Anthropic: {e}")
-        return f"❌ Error: {str(e)[:200]}", False
-
 # ─── API Endpoints ───────────────────────────────────────────────────────
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint"""
     hermes_ok = check_hermes_available()
+    provider_ok = llm_provider.health_check()
     return HealthResponse(
-        status="healthy" if hermes_ok else "degraded",
+        status="healthy" if provider_ok else "degraded",
         hermes_available=hermes_ok,
+        llm_provider=llm_provider.__class__.__name__,
+        provider_available=provider_ok,
         version="0.1.0"
     )
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
-    Send a message to Hermes agent
+    Send a message to LLM agent (provider-agnostic)
     """
     try:
         # Use provided config or default
-        config = request.config or default_config
+        api_config = request.config or default_config
+        provider_config = api_config.to_provider_config()
 
         # Generate conversation ID if needed
         conv_id = request.conversation_id or f"conv_{len(conversations)}_{hash(request.message) % 10000}"
 
-        # Invoke agent
-        response_text, reasoning_used = invoke_hermes_agent(request.message, config)
+        # Invoke LLM via configured provider
+        response_text, reasoning_used = llm_provider.invoke(request.message, provider_config)
 
         # Store in conversation history
         if conv_id not in conversations:
@@ -226,25 +170,36 @@ async def chat(request: ChatRequest):
             conversation_id=conv_id,
             response=response_text,
             reasoning_used=reasoning_used,
-            model=config.model
+            model=api_config.model
         )
 
     except Exception as e:
         logger.error(f"Chat error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/config", response_model=AgentConfig)
+@app.get("/config", response_model=AgentConfigAPI)
 async def get_config():
     """Get current default agent config"""
     return default_config
 
-@app.post("/config", response_model=AgentConfig)
-async def set_config(config: AgentConfig):
+@app.post("/config", response_model=AgentConfigAPI)
+async def set_config(config: AgentConfigAPI):
     """Update default agent config"""
     global default_config
     default_config = config
     logger.info(f"Config updated: {config}")
     return default_config
+
+@app.get("/provider")
+async def get_provider_info():
+    """Get current LLM provider info"""
+    return {
+        "provider": llm_provider.__class__.__name__,
+        "available": llm_provider.health_check(),
+        "config_key": "LLM_PROVIDER",
+        "possible_values": ["anthropic", "claude", "hermes"],
+        "current": os.getenv("LLM_PROVIDER", "anthropic")
+    }
 
 @app.get("/conversations")
 async def list_conversations():
@@ -268,10 +223,12 @@ async def root():
         "name": "Hermes Agent API",
         "version": "0.1.0",
         "status": "running",
+        "llm_provider": llm_provider.__class__.__name__,
         "endpoints": {
             "health": "GET /health",
             "chat": "POST /chat",
             "config": "GET/POST /config",
+            "provider": "GET /provider",
             "conversations": "GET /conversations",
             "conversation": "GET /conversations/{conv_id}",
             "docs": "/docs",
