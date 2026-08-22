@@ -47,8 +47,10 @@ async def run_bot():
 
 def main():
     """Start both services"""
+    import subprocess
+
     logger.info("=" * 60)
-    logger.info("Hermes Agent Manager - Startup")
+    logger.info("Relay Agent Manager - Startup")
     logger.info("=" * 60)
 
     # Check Telegram token
@@ -69,21 +71,41 @@ def main():
     logger.info(f"✓ Telegram bot token configured")
     logger.info(f"✓ API port: {os.getenv('API_PORT', '8000')}")
     logger.info("")
+    logger.info("Starting services...")
+    logger.info("")
 
-    # Start FastAPI in background thread
-    api_thread = Thread(target=run_api, daemon=True)
-    api_thread.start()
-    logger.info("✓ FastAPI server started")
+    # Start API in background process
+    api_process = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "main:app",
+         "--host", "0.0.0.0",
+         "--port", os.getenv("API_PORT", "8000"),
+         "--log-level", "info"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+    logger.info("✓ FastAPI server starting on port 8000...")
 
-    # Wait a moment for API to start
+    # Wait for API to be ready
     import time
     time.sleep(2)
 
     # Start Telegram bot in main thread
+    logger.info("✓ Relay bot starting...")
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info("Both services are running!")
+    logger.info("Find your bot at: t.me/RelayxyzBot")
+    logger.info("=" * 60)
+    logger.info("")
+
     try:
         asyncio.run(run_bot())
     except KeyboardInterrupt:
-        logger.info("\nShutdown signal received. Exiting...")
+        logger.info("\n\nShutdown signal received.")
+        logger.info("Stopping API server...")
+        api_process.terminate()
+        api_process.wait()
+        logger.info("✓ All services stopped")
         sys.exit(0)
 
 if __name__ == "__main__":

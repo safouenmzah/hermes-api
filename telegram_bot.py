@@ -328,8 +328,9 @@ def create_bot(token: str) -> Application:
 
     return app
 
-async def start_bot(token: str):
-    """Start the bot"""
+def start_bot_sync(token: str):
+    """Start the bot synchronously"""
     app = create_bot(token)
-    logger.info("Starting Telegram bot...")
-    await app.run_polling()
+    logger.info("✓ Relay bot connected to Telegram")
+    logger.info("✓ Bot is now listening for messages...")
+    app.run_polling()
