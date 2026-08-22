@@ -1,0 +1,41 @@
+# Git
+.git
+.gitignore
+.github
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.pytest_cache
+venv/
+.venv
+
+# Environment
+.env.local
+.env*.local
+
+# Logs
+*.log
+*.log.*
+
+# OS
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Testing
+.coverage
+htmlcov/
+
+# Temp files
+*.tmp
+.temp/
