@@ -18,7 +18,7 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
     volumes:
       - ${HOME}/.hermes:${HOME}/.hermes:ro
-      - /Volumes/Z\ Slim/relay-data/agents_db.json:/app/agents_db.json
+      - ./agents_db.json:/app/agents_db.json
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
